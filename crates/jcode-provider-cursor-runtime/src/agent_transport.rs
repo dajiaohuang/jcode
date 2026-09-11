@@ -224,6 +224,48 @@ fn encode_model_meta(name: &str, fast: bool) -> Vec<u8> {
     out
 }
 
+/// Resolve a catalog model id to the bare model name expected by Cursor's
+/// agent backend, returning whether the `-fast` mode was requested.
+///
+/// The live catalog folds vendor, effort, thinking, and fast settings into a
+/// single id (for example, `cursor-grok-4.6-high-fast`), while the wire
+/// protocol expects the base model and sends `fast` as a separate parameter.
+/// Already-bare ids pass through unchanged.
+fn resolve_model_id(model: &str) -> (String, bool) {
+    let mut name = model.trim();
+
+    if let Some(stripped) = name.strip_prefix("cursor-") {
+        name = stripped;
+    }
+
+    let fast = if let Some(stripped) = name.strip_suffix("-fast") {
+        name = stripped;
+        true
+    } else {
+        false
+    };
+
+    const SUFFIXES: &[&str] = &["-xhigh", "-high", "-medium", "-low", "-thinking"];
+    loop {
+        let mut stripped_any = false;
+        for suffix in SUFFIXES {
+            if let Some(stripped) = name.strip_suffix(suffix) {
+                if stripped.is_empty() {
+                    break;
+                }
+                name = stripped;
+                stripped_any = true;
+                break;
+            }
+        }
+        if !stripped_any {
+            break;
+        }
+    }
+
+    (name.to_string(), fast)
+}
+
 /// Build the request frames for a single-shot prompt turn.
 ///
 /// Returns the ordered list of Connect frames that constitute the streamed
@@ -244,11 +286,12 @@ fn build_run_frames(prompt: &str, model: &str, cwd: &str) -> Vec<Vec<u8>> {
     req.extend(messages);
     req.extend(field_str(4, ""));
     req.extend(field_str(5, &conv));
-    req.extend(field_ld(9, &encode_model_meta(model, false)));
+    let (resolved_model, fast) = resolve_model_id(model);
+    req.extend(field_ld(9, &encode_model_meta(&resolved_model, fast)));
     req.extend(field_varint(12, 0));
     // minimal catalog: a "default" entry plus the target model
     req.extend(field_ld(14, &field_str(1, "default")));
-    req.extend(field_ld(14, &encode_model_meta(model, false)));
+    req.extend(field_ld(14, &encode_model_meta(&resolved_model, fast)));
     req.extend(field_str(16, &conv));
     let frame0 = connect_frame(&field_ld(1, &req));
 
@@ -714,6 +757,34 @@ mod tests {
         let hay = String::from_utf8_lossy(frame0);
         assert!(hay.contains("PROMPT_MARKER"));
         assert!(hay.contains("composer-2.5"));
+    }
+
+    #[test]
+    fn resolve_model_id_strips_vendor_and_mode_suffixes() {
+        assert_eq!(
+            resolve_model_id("cursor-grok-4.6-high-fast"),
+            ("grok-4.6".to_string(), true)
+        );
+        assert_eq!(
+            resolve_model_id("claude-opus-5-thinking-high"),
+            ("claude-opus-5".to_string(), false)
+        );
+        assert_eq!(
+            resolve_model_id("gpt-5.6-sol-xhigh"),
+            ("gpt-5.6-sol".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn resolve_model_id_leaves_bare_ids_unchanged() {
+        assert_eq!(
+            resolve_model_id("composer-2.5"),
+            ("composer-2.5".to_string(), false)
+        );
+        assert_eq!(
+            resolve_model_id("gemini-3.1-pro"),
+            ("gemini-3.1-pro".to_string(), false)
+        );
     }
 
     #[test]
