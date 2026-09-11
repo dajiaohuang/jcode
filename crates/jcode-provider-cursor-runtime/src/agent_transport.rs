@@ -760,6 +760,14 @@ mod tests {
     }
 
     #[test]
+    fn frame0_encodes_resolved_cursor_model_id() {
+        let frames = build_run_frames("PROMPT_MARKER", "cursor-grok-4.6-high-fast", "/tmp");
+        let hay = String::from_utf8_lossy(&frames[0]);
+        assert!(hay.contains("grok-4.6"));
+        assert!(!hay.contains("cursor-grok-4.6-high-fast"));
+    }
+
+    #[test]
     fn resolve_model_id_strips_vendor_and_mode_suffixes() {
         assert_eq!(
             resolve_model_id("cursor-grok-4.6-high-fast"),
