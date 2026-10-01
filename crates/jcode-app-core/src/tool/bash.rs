@@ -55,8 +55,9 @@ fn wrap_repo_cargo_commands(command: &str, working_dir: Option<&Path>) -> Option
 
     Some(format!(
         r#"export JCODE_DEV_CARGO_SCRIPT={wrapper}
+export JCODE_CARGO_REPO_ROOT={repo}
 cargo() {{
-  if [[ "${{JCODE_IN_DEV_CARGO:-0}}" == "1" ]]; then
+  if [[ "${{JCODE_IN_DEV_CARGO:-0}}" == "1" || ( "$PWD" != "$JCODE_CARGO_REPO_ROOT" && "$PWD" != "$JCODE_CARGO_REPO_ROOT"/* ) ]]; then
     command cargo "$@"
   else
     JCODE_IN_DEV_CARGO=1 "$JCODE_DEV_CARGO_SCRIPT" "$@"
@@ -65,6 +66,7 @@ cargo() {{
 export -f cargo
 {command}"#,
         wrapper = shell_single_quote(&wrapper.to_string_lossy()),
+        repo = shell_single_quote(&repo.to_string_lossy()),
     ))
 }
 
@@ -724,6 +726,39 @@ mod utf8_truncation_tests {
     #[cfg(any(windows, unix))]
     use super::build_shell_command;
     use super::format_command_output;
+
+    #[cfg(unix)]
+    #[test]
+    fn cargo_wrapper_bypasses_repo_script_after_leaving_checkout() {
+        let temp = tempfile::tempdir().expect("temp repository");
+        let repo = temp.path();
+        std::fs::create_dir_all(repo.join(".git")).expect("git marker");
+        std::fs::write(
+            repo.join("Cargo.toml"),
+            "[package]\nname = \"jcode\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("manifest");
+        let working_dir = repo.join("crates/jcode-app-core");
+        std::fs::create_dir_all(&working_dir).expect("crate directory");
+        std::fs::create_dir_all(repo.join("scripts")).expect("scripts directory");
+        let wrapper = repo.join("scripts/dev_cargo.sh");
+        std::fs::write(&wrapper, "#!/bin/sh\n").expect("wrapper");
+        let script = super::wrap_repo_cargo_commands(
+            "cd /tmp/other-rust-project && cargo metadata",
+            Some(&working_dir),
+        )
+        .expect("repository wrapper should be generated");
+
+        assert!(script.contains(&format!(
+            "export JCODE_CARGO_REPO_ROOT={}",
+            super::shell_single_quote(&repo.to_string_lossy())
+        )));
+        assert!(script.contains("\"$PWD\" != \"$JCODE_CARGO_REPO_ROOT\"/*"));
+        assert!(script.contains(&format!(
+            "export JCODE_DEV_CARGO_SCRIPT={}",
+            super::shell_single_quote(&wrapper.to_string_lossy())
+        )));
+    }
 
     #[test]
     fn format_command_output_truncates_on_utf8_boundary() {
